@@ -1,0 +1,8 @@
+.env
+.git
+.gitignore
+.gitlab-ci.yml
+cc-bot
+chart/
+TODO
+*.md

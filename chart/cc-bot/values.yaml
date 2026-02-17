@@ -1,0 +1,43 @@
+replicaCount: 1
+
+image:
+  repository: registry.gitlab.com/xfrn-lab/trash-bot
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+#  - name: gitlab-registry
+
+env:
+  WORK_DIR: /home/bot
+  CLAUDE_PATH: claude
+  COMMAND_TIMEOUT: "5m"
+  SKIP_PERMISSIONS: "false"
+  ALLOWED_TOOLS: ""
+  SYSTEM_PROMPT: ""
+  # Git identity (optional)
+  GIT_USER_NAME: ""
+  GIT_USER_EMAIL: ""
+
+# Required secrets — create manually or via external-secrets:
+#   kubectl create secret generic cc-bot-secrets \
+#     --from-literal=TELEGRAM_BOT_TOKEN=xxx \
+#     --from-literal=ALLOWED_CHAT_IDS=123,456
+#
+# Optional git/gitlab secrets (add to the same secret):
+#     --from-literal=GIT_SSH_KEY="$(base64 -w0 < ~/.ssh/id_ed25519)" \
+#     --from-literal=GITLAB_TOKEN=glpat-xxx \
+#     --from-literal=NGROK_AUTHTOKEN=2xxx
+existingSecret: cc-bot-secrets
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
