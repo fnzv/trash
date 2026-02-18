@@ -97,7 +97,7 @@ resource "kubernetes_deployment_v1" "trash_bot" {
 
         container {
           image             = "docker.io/fnzv/trash:latest"
-          image_pull_policy = "Always"
+          image_pull_policy = "IfNotPresent"
           name              = "trash-bot"
 
           env_from {
