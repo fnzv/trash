@@ -1,8 +1,8 @@
-# Trash bot
-
 <p align="center">
-  <img src="image-1.png" width="300" alt="TRASHBOT Logo">
+  <img src="image.png" alt="Trash" width="200" />
 </p>
+
+<h1 align="center">Trash bot</h1>
 
 A Telegram Remote Assistant for SHell is a telegram bot that gives you direct access to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) from your phone. Send messages, photos, or voice notes — Claude responds and can execute shell commands with your approval.
 
@@ -10,6 +10,12 @@ This bot is an evolution of previously published bots:
 - https://github.com/fnzv/trsh-go
 - https://github.com/fnzv/trsh
 
+
+<p align="center">
+  <a href="https://github.com/fnzv/trash/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/fnzv/trash/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
+  <a href="https://github.com/fnzv/trash/releases"><img src="https://img.shields.io/github/v/release/fnzv/trash?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
+</p>
 
 > ⚠️ This bot has been coded with Claude Code itself, do not paste anything dangerous or non-sanitized data into it if you do not know what you are doing ⚠️
 
