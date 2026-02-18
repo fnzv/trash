@@ -2,7 +2,7 @@
 .git
 .gitignore
 .gitlab-ci.yml
-cc-bot
+trash-bot
 chart/
 TODO
 *.md

@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "cc-bot.fullname" . }}
+  name: {{ include "trash-bot.fullname" . }}
   labels:
-    {{- include "cc-bot.labels" . | nindent 4 }}
+    {{- include "trash-bot.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "cc-bot.selectorLabels" . | nindent 6 }}
+      {{- include "trash-bot.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "cc-bot.selectorLabels" . | nindent 8 }}
+        {{- include "trash-bot.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

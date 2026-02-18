@@ -1,4 +1,4 @@
-module cc-bot
+module trash-bot
 
 go 1.23
 

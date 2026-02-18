@@ -46,7 +46,7 @@ variable "skip_permissions" {
 # --- 1. SECRET ---
 resource "kubernetes_secret_v1" "cc_bot_secret" {
   metadata {
-    name = "cc-bot-secrets"
+    name = "trash-bot-secrets"
   }
   data = {
     TELEGRAM_BOT_TOKEN = var.telegram_bot_token
@@ -64,9 +64,9 @@ resource "kubernetes_secret_v1" "cc_bot_secret" {
 # --- 3. DEPLOYMENT ---
 resource "kubernetes_deployment_v1" "cc_bot" {
   metadata {
-    name = "cc-bot"
+    name = "trash-bot"
     labels = {
-      appname = "cc-bot"
+      appname = "trash-bot"
     }
   }
 
@@ -79,14 +79,14 @@ resource "kubernetes_deployment_v1" "cc_bot" {
 
     selector {
       match_labels = {
-        appname = "cc-bot"
+        appname = "trash-bot"
       }
     }
 
     template {
       metadata {
         labels = {
-          appname = "cc-bot"
+          appname = "trash-bot"
         }
       }
 
@@ -98,7 +98,7 @@ resource "kubernetes_deployment_v1" "cc_bot" {
         container {
           image             = "registry.gitlab.com/xfrn-lab/trash-bot:latest"
           image_pull_policy = "Always"
-          name              = "cc-bot"
+          name              = "trash-bot"
 
           env_from {
             secret_ref {

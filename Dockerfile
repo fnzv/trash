@@ -5,7 +5,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o cc-bot .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o trash-bot .
 
 FROM python:3.11-slim
 
@@ -31,8 +31,8 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 
 RUN useradd -m -s /bin/bash bot
 WORKDIR /home/bot
-COPY --from=builder /app/cc-bot .
+COPY --from=builder /app/trash-bot .
 RUN chown -R bot:bot /home/bot
 
 USER bot
-CMD ["./cc-bot"]
+CMD ["./trash-bot"]

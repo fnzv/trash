@@ -142,7 +142,7 @@ git.go         Sets up git config and SSH keys inside the container
 
 ## Deployment
 
-A `Dockerfile` and Terraform config (`cc-bot.tf`) are included for deploying to Kubernetes. The Docker image bundles Claude Code CLI, Python (for Whisper), and the bot binary.
+A `Dockerfile` and Terraform config (`trash-bot.tf`) are included for deploying to Kubernetes. The Docker image bundles Claude Code CLI, Python (for Whisper), and the bot binary.
 
 ```bash
 # Build and push

@@ -20,7 +20,7 @@ env:
   GIT_USER_EMAIL: ""
 
 # Required secrets — create manually or via external-secrets:
-#   kubectl create secret generic cc-bot-secrets \
+#   kubectl create secret generic trash-bot-secrets \
 #     --from-literal=TELEGRAM_BOT_TOKEN=xxx \
 #     --from-literal=ALLOWED_CHAT_IDS=123,456
 #
@@ -28,7 +28,7 @@ env:
 #     --from-literal=GIT_SSH_KEY="$(base64 -w0 < ~/.ssh/id_ed25519)" \
 #     --from-literal=GITLAB_TOKEN=glpat-xxx \
 #     --from-literal=NGROK_AUTHTOKEN=2xxx
-existingSecret: cc-bot-secrets
+existingSecret: trash-bot-secrets
 
 resources:
   requests:
