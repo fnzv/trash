@@ -44,7 +44,7 @@ variable "skip_permissions" {
 }
 
 # --- 1. SECRET ---
-resource "kubernetes_secret_v1" "cc_bot_secret" {
+resource "kubernetes_secret_v1" "trash_bot_secret" {
   metadata {
     name = "trash-bot-secrets"
   }
@@ -62,7 +62,7 @@ resource "kubernetes_secret_v1" "cc_bot_secret" {
 }
 
 # --- 3. DEPLOYMENT ---
-resource "kubernetes_deployment_v1" "cc_bot" {
+resource "kubernetes_deployment_v1" "trash_bot" {
   metadata {
     name = "trash-bot"
     labels = {
@@ -96,13 +96,13 @@ resource "kubernetes_deployment_v1" "cc_bot" {
         }
 
         container {
-          image             = "registry.gitlab.com/xfrn-lab/trash-bot:latest"
+          image             = "docker.io/fnzv/trash:latest"
           image_pull_policy = "Always"
           name              = "trash-bot"
 
           env_from {
             secret_ref {
-              name = kubernetes_secret_v1.cc_bot_secret.metadata[0].name
+              name = kubernetes_secret_v1.trash_bot_secret.metadata[0].name
             }
           }
 
