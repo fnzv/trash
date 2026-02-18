@@ -1,8 +1,5 @@
 FROM golang:1.23-alpine AS builder
-
-# Adding build tools to the builder stage for Go compilation
 RUN apk add --no-cache build-base git
-
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,23 +9,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o cc-bot .
 # --- Using Python Slim (Debian) ---
 FROM python:3.11-slim
 
-# Install system dependencies
-# - iputils-ping: Provides the ICMP ping tool
-# - build-essential: Standard compiler/tools for Go/C extensions
-# - git, jq: Standard dev tools
-RUN apt-get update && apt-get install -y \
+# 1. Optimized System Dependencies
+# Removed build-essential (not needed for runtime)
+# Removed vim and lynx (save space)
+# Added --no-install-recommends to prevent bloat
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     nodejs \
     npm \
     ffmpeg \
     curl \
     iputils-ping \
-    build-essential \
     git \
     openssh-client \
-    lynx \
     sqlite3 \
-    vim \
     procps \
     jq \
     && curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
@@ -36,18 +30,19 @@ RUN apt-get update && apt-get install -y \
     && echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
        | tee /etc/apt/sources.list.d/ngrok.list \
     && apt-get update \
-    && apt-get install -y ngrok \
+    && apt-get install -y --no-install-recommends ngrok \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# 2. Install Python dependencies
+# Whisper pulls in PyTorch. --no-cache-dir is vital here.
 RUN pip install --no-cache-dir setuptools openai-whisper
 
-# Install Node dependencies
-RUN npm install -g @anthropic-ai/claude-code
+# 3. Install Node dependencies
+RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
 
-# Create a non-root user
+# 4. Final Setup
 RUN useradd -m -s /bin/bash bot
-
 WORKDIR /home/bot
 COPY --from=builder /app/cc-bot .
 RUN chown -R bot:bot /home/bot
