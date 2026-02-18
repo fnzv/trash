@@ -6,3 +6,11 @@ cc-bot
 chart/
 TODO
 *.md
+.git
+.github
+node_modules
+__pycache__
+*.log
+*.mp4
+*.wav
+*.zip

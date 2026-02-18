@@ -1,3 +1,4 @@
+# --- Builder Stage ---
 FROM golang:1.23-alpine AS builder
 RUN apk add --no-cache build-base git
 WORKDIR /app
@@ -8,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o cc-bot .
 
 FROM python:3.11-slim
 
-# Combine System Deps, Ngrok, and Node to reduce intermediate layers
+# 1. Combine System Deps to reduce intermediate layer overhead
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates nodejs npm ffmpeg curl iputils-ping git \
     openssh-client sqlite3 procps jq \
@@ -21,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch + Whisper + Claude Code in one layer to save space during build
+# 2. THE CRITICAL FIX: Install CPU-only PyTorch first
+# This saves ~3.5GB of disk space.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir openai-whisper && \
     npm install -g @anthropic-ai/claude-code && \
