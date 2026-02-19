@@ -19,7 +19,14 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
+          remove-docker-images: 'true'
+          overprovision-lvm: 'true'
 
+      - uses: actions/checkout@v4
+      - name: Inspect Disk Space
+        run: df -h 
+      - name: Prune Docker
+        run: docker system prune -af 
       - uses: actions/checkout@v4
 
       - name: Login to Docker Hub
