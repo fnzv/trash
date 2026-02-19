@@ -36,7 +36,7 @@ This bot is an evolution of previously published bots:
 - **Chat ID whitelist** — only authorized users can interact with the bot
 - **Interationg with Gitlab** — direct interaction with a code base in Gitlab (e.g. giving a readonly token and ssh key for pushing)
 
-## How It Works
+## How It works
 
 ```
 You (Telegram) --> Trash Bot --> Claude Code CLI --> Response
@@ -48,6 +48,14 @@ You (Telegram) --> Trash Bot --> Claude Code CLI --> Response
                               Executes & feeds output
                               back to Claude
 ```
+
+## Screenshot
+
+The following is a sample interaction with the bot running as a pod, once provided the tools you can build "remotely" or plan ideas
+
+<p align="center">
+  <img src="trash-chat.png" alt="Trash" width="400" />
+</p>
 
 ## Quick Start
 
