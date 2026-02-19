@@ -2,8 +2,8 @@ name: ci
 
 on:
   push:
-    branches: [ "main" ]
-    tags: [ "*" ]
+    tags:
+      - '*' # Runs only when a tag is pushed
 
 jobs:
   build:
@@ -19,31 +19,20 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-          remove-docker-images: 'true'
-          overprovision-lvm: 'true'
 
       - uses: actions/checkout@v4
-      - name: Inspect Disk Space
-        run: df -h 
-      - name: Prune Docker
-        run: docker system prune -af 
-      - uses: actions/checkout@v4
-
-      - name: Set image tag
-        id: vars
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
       - name: Login to Docker Hub
         run: echo "${{ secrets.GH_DOCKERHUB }}" | docker login -u fnzv --password-stdin
 
-      - name: Build image
+      - name: Build and Push image
         run: |
+          TAG_NAME=${{ github.ref_name }}
+          
           docker build \
-            -t fnzv/trash:${{ steps.vars.outputs.SHORT_SHA }} \
+            -t fnzv/trash:${TAG_NAME} \
             -t fnzv/trash:latest \
             .
-
-      - name: Push image
-        run: |
-          docker push fnzv/trash:${{ steps.vars.outputs.SHORT_SHA }}
+            
+          docker push fnzv/trash:${TAG_NAME}
           docker push fnzv/trash:latest
