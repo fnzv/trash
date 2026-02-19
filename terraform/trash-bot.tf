@@ -91,10 +91,6 @@ resource "kubernetes_deployment_v1" "trash_bot" {
       }
 
       spec {
-        image_pull_secrets {
-          name = "gitlab-registry"
-        }
-
         container {
           image             = "docker.io/fnzv/trash:latest"
           image_pull_policy = "IfNotPresent"
