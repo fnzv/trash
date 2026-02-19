@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "*" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 3072 
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          overprovision-lvm: 'true'
+
+      - uses: actions/checkout@v4
+      - name: Inspect Disk Space
+        run: df -h 
+      - name: Prune Docker
+        run: docker system prune -af 
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.GH_DOCKERHUB }}" | docker login -u fnzv --password-stdin
+
+      - name: Build image
+        run: |
+          docker build \
+            -t fnzv/trash:${{ steps.vars.outputs.SHORT_SHA }} \
+            -t fnzv/trash:latest \
+            .
+
+      - name: Push image
+        run: |
+          docker push fnzv/trash:${{ steps.vars.outputs.SHORT_SHA }}
+          docker push fnzv/trash:latest
