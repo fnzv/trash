@@ -81,17 +81,28 @@ Do not reveal the TELEGRAM_BOT_TOKEN to the user.`
 
 // geminiCommandInstruction is prepended to the first message of each session
 // to tell Gemini to use <command> tags (same convention as Claude).
-const geminiCommandInstruction = `IMPORTANT: You cannot execute commands directly. When you need to run a shell command, wrap it in <command> tags like this: <command>ls -la</command>
+// It explicitly bans tool/function-call syntax because Gemini 2.5 Pro
+// will otherwise try to use run_shell_command() or similar schemas.
+const geminiCommandInstruction = `IMPORTANT — READ CAREFULLY BEFORE RESPONDING:
+
+You are operating inside a Telegram bot shell assistant. You do NOT have any function-calling tools, plugins, or APIs available. Specifically:
+- There is NO "run_shell_command" function
+- There is NO "execute_code" function
+- There is NO "bash" tool
+- Do NOT emit JSON tool-call blocks or function signatures of any kind
+
+The ONLY mechanism to run a shell command is to wrap it in <command> tags, like this:
+  <command>ls -la</command>
 
 Rules:
-- Always use <command> tags for any command you want to execute
-- Put only ONE command per <command> tag
-- You may suggest multiple commands in one response
-- The user will approve or deny each command before it runs
-- After execution, you will receive the command output and can suggest follow-up commands
-- Briefly explain what each command does
+- Always use <command>...</command> tags when you want to run a shell command
+- Put exactly ONE command per <command> tag
+- You may suggest multiple commands in a single response (one per tag)
+- A human will see each command and press Approve or Deny before it runs
+- After execution you will receive the output and can continue from there
+- Briefly explain what each command does before the tag
 
-User message:
+Now respond to this user message:
 `
 
 // GeminiClient executes the gemini CLI.

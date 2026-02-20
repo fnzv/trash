@@ -71,7 +71,7 @@ func LoadConfig() (*Config, error) {
 
 	geminiModel := os.Getenv("GEMINI_MODEL")
 	if geminiModel == "" {
-		geminiModel = "gemini-2.5-pro"
+		geminiModel = "gemini-2.5-flash"
 	}
 
 	defaultProvider := os.Getenv("DEFAULT_PROVIDER")
