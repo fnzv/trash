@@ -98,6 +98,7 @@ User message:
 type GeminiClient struct {
 	mu           sync.RWMutex
 	geminiPath   string
+	model        string
 	workDir      string
 	systemPrompt string
 	apiKey       string // GEMINI_API_KEY, may be loaded from disk
@@ -119,9 +120,10 @@ func NewGeminiClient(cfg *Config) *GeminiClient {
 	} else {
 		log.Printf("[gemini] no API key set — will prompt on first use")
 	}
-	log.Printf("[gemini] path=%s workDir=%s", cfg.GeminiPath, cfg.WorkDir)
+	log.Printf("[gemini] path=%s model=%s workDir=%s", cfg.GeminiPath, cfg.GeminiModel, cfg.WorkDir)
 	return &GeminiClient{
 		geminiPath:   cfg.GeminiPath,
+		model:        cfg.GeminiModel,
 		workDir:      cfg.WorkDir,
 		systemPrompt: prompt,
 		apiKey:       apiKey,
@@ -189,25 +191,14 @@ func (g *GeminiClient) SetupToken(ctx context.Context) (string, func(key string)
 		if key == "" {
 			return fmt.Errorf("empty API key")
 		}
-		// Quick sanity check: Gemini API keys start with "AIza"
+		// Basic sanity check: Gemini API keys start with "AIza"
 		if !strings.HasPrefix(key, "AIza") {
 			log.Printf("[gemini-login] key doesn't look like a Gemini API key: %.10s...", key)
+			return fmt.Errorf("that doesn't look like a valid Gemini API key (should start with AIza)")
 		}
-		if err := g.SetAPIKey(key); err != nil {
-			return err
-		}
-		// Verify the key works by making a quick test call.
-		verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		_, err := g.Send(verifyCtx, nil, "hi")
-		if err != nil {
-			// Reset the key if it doesn't work.
-			g.mu.Lock()
-			g.apiKey = ""
-			g.mu.Unlock()
-			return fmt.Errorf("API key verification failed: %w", err)
-		}
-		return nil
+		// Save key — no test call here, it would be slow on first CLI launch.
+		// If the key is wrong the next message will fail and re-prompt.
+		return g.SetAPIKey(key)
 	}
 
 	return msg, feedKey, nil
@@ -252,10 +243,14 @@ func (g *GeminiClient) buildPrompt(history []GeminiMessage, newMessage string) s
 func (g *GeminiClient) Send(ctx context.Context, history []GeminiMessage, message string) (string, error) {
 	prompt := g.buildPrompt(history, message)
 
-	log.Printf("[gemini] exec: %s -p <prompt>", g.geminiPath)
+	args := []string{"-p", prompt}
+	if g.model != "" {
+		args = append([]string{"-m", g.model}, args...)
+	}
+	log.Printf("[gemini] exec: %s %s", g.geminiPath, strings.Join(args, " "))
 	log.Printf("[gemini] history turns=%d, new message (%d bytes): %.200s", len(history), len(message), message)
 
-	cmd := exec.CommandContext(ctx, g.geminiPath, "-p", prompt)
+	cmd := exec.CommandContext(ctx, g.geminiPath, args...)
 	cmd.Dir = g.workDir
 	env := os.Environ()
 	if key := g.getAPIKey(); key != "" {

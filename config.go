@@ -15,6 +15,7 @@ type Config struct {
 	ClaudePath      string
 	GeminiPath      string
 	GeminiAPIKey    string
+	GeminiModel     string
 	DefaultProvider string
 	CommandTimeout  time.Duration
 	AllowedTools    []string
@@ -68,6 +69,11 @@ func LoadConfig() (*Config, error) {
 		geminiPath = "gemini"
 	}
 
+	geminiModel := os.Getenv("GEMINI_MODEL")
+	if geminiModel == "" {
+		geminiModel = "gemini-2.5-pro"
+	}
+
 	defaultProvider := os.Getenv("DEFAULT_PROVIDER")
 	if defaultProvider == "" {
 		defaultProvider = "claude"
@@ -114,6 +120,7 @@ func LoadConfig() (*Config, error) {
 		ClaudePath:      claudePath,
 		GeminiPath:      geminiPath,
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+		GeminiModel:     geminiModel,
 		DefaultProvider: defaultProvider,
 		CommandTimeout:  timeout,
 		AllowedTools:    allowedTools,
