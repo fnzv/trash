@@ -11,20 +11,58 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+// ProviderStore is a thread-safe map of chatID → active provider ("claude"|"gemini").
+type ProviderStore struct {
+	mu       sync.RWMutex
+	defaults string
+	m        map[int64]string
+}
+
+func NewProviderStore(defaultProvider string) *ProviderStore {
+	if defaultProvider == "" {
+		defaultProvider = "claude"
+	}
+	return &ProviderStore{defaults: defaultProvider, m: make(map[int64]string)}
+}
+
+func (p *ProviderStore) Get(chatID int64) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if v, ok := p.m[chatID]; ok {
+		return v
+	}
+	return p.defaults
+}
+
+func (p *ProviderStore) Set(chatID int64, provider string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.m[chatID] = provider
+}
+
+func (p *ProviderStore) Delete(chatID int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.m, chatID)
+}
+
 // Handlers processes Telegram commands and messages.
 type Handlers struct {
-	sender    *Sender
-	claude    *ClaudeClient
-	sessions  *SessionManager
-	approvals *ApprovalStore
-	logins    *LoginStore
-	usage     *UsageTracker
-	media     *MediaHandler
-	locks     *ChatLocks
-	allowed   map[int64]bool
-	timeout   time.Duration
-	skipPerms bool
-	maxRounds int
+	sender         *Sender
+	claude         *ClaudeClient
+	gemini         *GeminiClient
+	sessions       *SessionManager
+	geminiSessions *GeminiSessionStore
+	providers      *ProviderStore
+	approvals      *ApprovalStore
+	logins         *LoginStore
+	usage          *UsageTracker
+	media          *MediaHandler
+	locks          *ChatLocks
+	allowed        map[int64]bool
+	timeout        time.Duration
+	skipPerms      bool
+	maxRounds      int
 }
 
 // ChatLocks manages per-chat mutexes.
@@ -53,20 +91,23 @@ func (c *ChatLocks) Lock(chatID int64) func() {
 	return l.Unlock
 }
 
-func NewHandlers(sender *Sender, claude *ClaudeClient, sessions *SessionManager, approvals *ApprovalStore, logins *LoginStore, usage *UsageTracker, media *MediaHandler, cfg *Config) *Handlers {
+func NewHandlers(sender *Sender, claude *ClaudeClient, gemini *GeminiClient, sessions *SessionManager, geminiSessions *GeminiSessionStore, providers *ProviderStore, approvals *ApprovalStore, logins *LoginStore, usage *UsageTracker, media *MediaHandler, cfg *Config) *Handlers {
 	return &Handlers{
-		sender:    sender,
-		claude:    claude,
-		sessions:  sessions,
-		approvals: approvals,
-		logins:    logins,
-		usage:     usage,
-		media:     media,
-		locks:     NewChatLocks(),
-		allowed:   cfg.AllowedChatIDs,
-		timeout:   cfg.CommandTimeout,
-		skipPerms: cfg.SkipPermissions,
-		maxRounds: cfg.MaxToolRounds,
+		sender:         sender,
+		claude:         claude,
+		gemini:         gemini,
+		sessions:       sessions,
+		geminiSessions: geminiSessions,
+		providers:      providers,
+		approvals:      approvals,
+		logins:         logins,
+		usage:          usage,
+		media:          media,
+		locks:          NewChatLocks(),
+		allowed:        cfg.AllowedChatIDs,
+		timeout:        cfg.CommandTimeout,
+		skipPerms:      cfg.SkipPermissions,
+		maxRounds:      cfg.MaxToolRounds,
 	}
 }
 
@@ -77,10 +118,13 @@ func (h *Handlers) IsAllowed(chatID int64) bool {
 
 func (h *Handlers) HandleStart(chatID int64) {
 	h.sender.SendPlain(chatID,
-		"Welcome to Claude Code Bot!\n\n"+
-			"Send me any message and I'll forward it to Claude.\n"+
+		"Welcome to AI Code Bot!\n\n"+
+			"Send me any message and I'll forward it to Claude (default) or Gemini.\n"+
 			"Commands will require your approval before executing.\n"+
-			"Use /new to start a fresh conversation, or /help for more info.")
+			"Use /new to start a fresh conversation, /help for commands, or:\n"+
+			"  /claude — switch to Claude\n"+
+			"  /gemini — switch to Gemini\n"+
+			"  /model  — show active AI")
 }
 
 func (h *Handlers) HandleNew(chatID int64) {
@@ -89,6 +133,7 @@ func (h *Handlers) HandleNew(chatID int64) {
 
 	log.Printf("[chat %d] session reset", chatID)
 	h.sessions.Delete(chatID)
+	h.geminiSessions.Delete(chatID)
 	h.approvals.Delete(chatID)
 	h.usage.Reset(chatID)
 	h.sender.SendPlain(chatID, "Session reset. Your next message will start a new conversation.")
@@ -96,15 +141,18 @@ func (h *Handlers) HandleNew(chatID int64) {
 
 func (h *Handlers) HandleHelp(chatID int64) {
 	h.sender.SendPlain(chatID,
-		"Claude Code Bot - Commands:\n\n"+
-			"/start - Welcome message\n"+
-			"/new - Reset session (start fresh conversation)\n"+
-			"/login - Manually start OAuth login\n"+
-			"/usage - Check Claude Code plan usage and rate limits\n"+
+		"AI Code Bot — Commands:\n\n"+
+			"/start   - Welcome message\n"+
+			"/new     - Reset session (start fresh conversation)\n"+
+			"/claude  - Switch active AI to Claude\n"+
+			"/gemini  - Switch active AI to Gemini\n"+
+			"/model   - Show currently active AI\n"+
+			"/login   - Login to the active AI (Claude OAuth / Gemini API key)\n"+
+			"/usage   - Check usage stats\n"+
 			"/safeguard <cmd> - Test a command against safeguard rules\n"+
-			"/help - Show this help message\n\n"+
-			"Send any text message and I'll forward it to Claude. "+
-			"When Claude suggests a command, you'll see Approve/Deny buttons. "+
+			"/help    - Show this help message\n\n"+
+			"Send any text message and I'll forward it to the active AI. "+
+			"When the AI suggests a command, you'll see Approve/Deny buttons. "+
 			"Conversation context is maintained until you use /new.")
 }
 
@@ -154,6 +202,33 @@ func (h *Handlers) HandleUnauthorized(chatID int64) {
 	h.sender.SendPlain(chatID, fmt.Sprintf("Unauthorized. Your chat ID: %d", chatID))
 }
 
+// HandleSwitchProvider switches the active AI provider for a chat and resets the session.
+func (h *Handlers) HandleSwitchProvider(chatID int64, provider string) {
+	unlock := h.locks.Lock(chatID)
+	defer unlock()
+
+	current := h.providers.Get(chatID)
+	if current == provider {
+		h.sender.SendPlain(chatID, fmt.Sprintf("Already using %s.", provider))
+		return
+	}
+
+	h.providers.Set(chatID, provider)
+	// Reset sessions so the new provider starts fresh.
+	h.sessions.Delete(chatID)
+	h.geminiSessions.Delete(chatID)
+	h.approvals.Delete(chatID)
+
+	log.Printf("[chat %d] switched provider: %s → %s", chatID, current, provider)
+	h.sender.SendPlain(chatID, fmt.Sprintf("Switched to %s. Starting a fresh session.", provider))
+}
+
+// HandleModel reports the currently active AI provider.
+func (h *Handlers) HandleModel(chatID int64) {
+	provider := h.providers.Get(chatID)
+	h.sender.SendPlain(chatID, fmt.Sprintf("Current AI: %s", provider))
+}
+
 // HandleMessage processes a user text message.
 func (h *Handlers) HandleMessage(ctx context.Context, chatID int64, text string) {
 	unlock := h.locks.Lock(chatID)
@@ -175,7 +250,7 @@ func (h *Handlers) HandleMessage(ctx context.Context, chatID int64, text string)
 	}
 
 	h.sender.SendTyping(chatID)
-	h.callClaude(ctx, chatID, text)
+	h.callAI(ctx, chatID, text)
 }
 
 // HandlePhoto processes a photo message.
@@ -207,7 +282,7 @@ func (h *Handlers) HandlePhoto(ctx context.Context, chatID int64, photos []tgbot
 		message += fmt.Sprintf("\nUser's message: %s", caption)
 	}
 
-	h.callClaude(ctx, chatID, message)
+	h.callAI(ctx, chatID, message)
 }
 
 // HandleVoice processes a voice message.
@@ -244,7 +319,7 @@ func (h *Handlers) HandleVoice(ctx context.Context, chatID int64, voice *tgbotap
 		message += fmt.Sprintf("\nUser's caption: %s", caption)
 	}
 
-	h.callClaude(ctx, chatID, message)
+	h.callAI(ctx, chatID, message)
 }
 
 // HandleAudio processes an audio file message.
@@ -290,13 +365,50 @@ func (h *Handlers) HandleAudio(ctx context.Context, chatID int64, audio *tgbotap
 		message += fmt.Sprintf("\nUser's caption: %s", caption)
 	}
 
-	h.callClaude(ctx, chatID, message)
+	h.callAI(ctx, chatID, message)
 }
 
+// HandleLogin starts the login flow for whichever AI provider is currently active.
 func (h *Handlers) HandleLogin(ctx context.Context, chatID int64) {
 	unlock := h.locks.Lock(chatID)
 	defer unlock()
-	h.performLogin(ctx, chatID, "")
+
+	provider := h.providers.Get(chatID)
+	if provider == "gemini" {
+		h.performGeminiLogin(ctx, chatID, "")
+	} else {
+		h.performLogin(ctx, chatID, "")
+	}
+}
+
+// performGeminiLogin sends the user the Google AI Studio link and waits for them to paste their API key.
+func (h *Handlers) performGeminiLogin(ctx context.Context, chatID int64, originalMessage string) {
+	// Cancel any existing pending login.
+	if old := h.logins.Get(chatID); old != nil {
+		log.Printf("[chat %d] cancelling previous pending login", chatID)
+		old.Cancel()
+		h.logins.Delete(chatID)
+	}
+
+	loginCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+
+	msg, feedKey, err := h.gemini.SetupToken(loginCtx)
+	if err != nil {
+		cancel()
+		log.Printf("[chat %d] gemini setup-token failed: %v", chatID, err)
+		h.sender.SendPlain(chatID, fmt.Sprintf("Gemini login setup failed: %v", err))
+		return
+	}
+
+	h.logins.Set(chatID, &PendingLogin{
+		FeedCode:        feedKey,
+		Cancel:          cancel,
+		OriginalMessage: originalMessage,
+		Provider:        "gemini",
+	})
+
+	log.Printf("[chat %d] gemini login: waiting for user to paste API key", chatID)
+	h.sender.SendPlain(chatID, msg)
 }
 
 // performLogin starts the OAuth login flow via `claude setup-token`.
@@ -326,6 +438,7 @@ func (h *Handlers) performLogin(ctx context.Context, chatID int64, originalMessa
 		FeedCode:        feedCode,
 		Cancel:          cancel,
 		OriginalMessage: originalMessage,
+		Provider:        "claude",
 	})
 
 	log.Printf("[chat %d] login URL obtained, waiting for user to send auth code", chatID)
@@ -335,35 +448,56 @@ func (h *Handlers) performLogin(ctx context.Context, chatID int64, originalMessa
 			"Paste that code here as your next message.", url))
 }
 
-// handleLoginCode processes the auth code the user sends after OAuth.
+// handleLoginCode processes the auth code/key the user sends during a login flow.
 func (h *Handlers) handleLoginCode(ctx context.Context, chatID int64, code string, pending *PendingLogin) {
 	h.logins.Delete(chatID)
 	defer pending.Cancel()
 
 	code = strings.TrimSpace(code)
 	if code == "" {
-		h.sender.SendPlain(chatID, "Empty code. Please try again by sending a new message.")
+		h.sender.SendPlain(chatID, "Empty input. Please try again by sending a new message.")
 		return
 	}
 
-	log.Printf("[chat %d] feeding auth code to setup-token", chatID)
-	h.sender.SendPlain(chatID, "Verifying auth code...")
+	if pending.Provider == "gemini" {
+		log.Printf("[chat %d] verifying Gemini API key", chatID)
+		h.sender.SendPlain(chatID, "Verifying API key...")
+	} else {
+		log.Printf("[chat %d] feeding auth code to setup-token", chatID)
+		h.sender.SendPlain(chatID, "Verifying auth code...")
+	}
 
 	if err := pending.FeedCode(code); err != nil {
-		log.Printf("[chat %d] setup-token error: %v", chatID, err)
-		h.sender.SendPlain(chatID, fmt.Sprintf("Login failed: %v\nPlease try again by sending a new message.", err))
+		log.Printf("[chat %d] login error: %v", chatID, err)
+		h.sender.SendPlain(chatID, fmt.Sprintf("Login failed: %v\nPlease try again with /login.", err))
 		return
 	}
 
-	log.Printf("[chat %d] login successful", chatID)
+	log.Printf("[chat %d] login successful (provider=%s)", chatID, pending.Provider)
 	if pending.OriginalMessage == "" {
-		h.sender.SendPlain(chatID, "Login successful! You can now send messages to Claude.")
+		providerName := pending.Provider
+		if providerName == "" {
+			providerName = "Claude"
+		}
+		h.sender.SendPlain(chatID, fmt.Sprintf("Login successful! You can now send messages to %s.", providerName))
 		return
 	}
-	log.Printf("[chat %d] retrying original message", chatID)
+	log.Printf("[chat %d] retrying original message after login", chatID)
 	h.sender.SendPlain(chatID, "Login successful! Processing your message...")
 	h.sender.SendTyping(chatID)
-	h.callClaude(ctx, chatID, pending.OriginalMessage)
+	h.callAI(ctx, chatID, pending.OriginalMessage)
+}
+
+// callAI dispatches to the active AI provider for this chat.
+func (h *Handlers) callAI(ctx context.Context, chatID int64, message string) {
+	provider := h.providers.Get(chatID)
+	log.Printf("[chat %d] callAI: provider=%s", chatID, provider)
+	switch provider {
+	case "gemini":
+		h.callGemini(ctx, chatID, message)
+	default:
+		h.callClaude(ctx, chatID, message)
+	}
 }
 
 // callClaude calls the Claude CLI and processes the response.
@@ -449,7 +583,7 @@ func (h *Handlers) callClaude(ctx context.Context, chatID int64, message string)
 	// SKIP_PERMISSIONS: auto-execute all commands.
 	if h.skipPerms {
 		log.Printf("[chat %d] skip_permissions=true, auto-executing %d commands", chatID, len(commands))
-		h.autoExecute(ctx, chatID, commands, resp.SessionID)
+		h.autoExecuteClaude(ctx, chatID, commands, resp.SessionID)
 		return
 	}
 
@@ -458,8 +592,87 @@ func (h *Handlers) callClaude(ctx context.Context, chatID int64, message string)
 		Commands:  commands,
 		Results:   make([]CommandResult, 0, len(commands)),
 		SessionID: resp.SessionID,
+		Provider:  "claude",
 	}
 	log.Printf("[chat %d] storing %d pending commands, waiting for approval", chatID, len(commands))
+	h.approvals.Set(chatID, turn)
+	h.showApproval(chatID, turn)
+}
+
+// callGemini calls the Gemini CLI and processes the response.
+func (h *Handlers) callGemini(ctx context.Context, chatID int64, message string) {
+	geminiCtx, cancel := context.WithTimeout(ctx, h.timeout)
+	defer cancel()
+
+	// Typing indicator.
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				h.sender.SendTyping(chatID)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	history := h.geminiSessions.Get(chatID)
+	log.Printf("[chat %d] calling Gemini (history turns=%d)", chatID, len(history))
+	log.Printf("[chat %d] message: %.200s", chatID, message)
+
+	result, err := h.gemini.Send(geminiCtx, history, message)
+	close(done)
+
+	if err != nil {
+		if !h.gemini.HasAPIKey() || IsGeminiNotLoggedIn(err) {
+			log.Printf("[chat %d] Gemini not authenticated, starting API key flow", chatID)
+			h.performGeminiLogin(ctx, chatID, message)
+			return
+		}
+		log.Printf("gemini error (chat %d): %v", chatID, err)
+		h.sender.SendPlain(chatID, fmt.Sprintf("Error from Gemini: %v", err))
+		return
+	}
+
+	// Store conversation turns.
+	h.geminiSessions.Append(chatID,
+		GeminiMessage{Role: "user", Content: message},
+		GeminiMessage{Role: "model", Content: result},
+	)
+
+	log.Printf("[chat %d] gemini response length: %d bytes", chatID, len(result))
+
+	// Parse <command> tags.
+	cleanText, commands := ParseCommands(result)
+	log.Printf("[chat %d] parsed gemini response: %d commands, text=%d bytes", chatID, len(commands), len(cleanText))
+
+	if cleanText != "" {
+		h.sender.Send(chatID, cleanText)
+	}
+
+	if len(commands) == 0 {
+		return
+	}
+
+	for i, cmd := range commands {
+		log.Printf("[chat %d] gemini command %d: %s", chatID, i+1, cmd)
+	}
+
+	if h.skipPerms {
+		log.Printf("[chat %d] skip_permissions=true, auto-executing %d gemini commands", chatID, len(commands))
+		h.autoExecuteGemini(ctx, chatID, commands)
+		return
+	}
+
+	turn := &PendingTurn{
+		Commands:  commands,
+		Results:   make([]CommandResult, 0, len(commands)),
+		SessionID: "",
+		Provider:  "gemini",
+	}
 	h.approvals.Set(chatID, turn)
 	h.showApproval(chatID, turn)
 }
@@ -502,7 +715,14 @@ func (h *Handlers) HandleCallback(ctx context.Context, chatID int64, callbackID 
 
 		log.Printf("[chat %d] executing approved command: %s", chatID, cmd)
 		h.sender.SendTyping(chatID)
-		output, err := h.claude.ExecuteCommand(ctx, cmd)
+
+		var output string
+		var err error
+		if turn.Provider == "gemini" {
+			output, err = h.gemini.ExecuteCommand(ctx, cmd)
+		} else {
+			output, err = h.claude.ExecuteCommand(ctx, cmd)
+		}
 		if err != nil {
 			log.Printf("[chat %d] command error: %v", chatID, err)
 			output = fmt.Sprintf("%s\nError: %v", output, err)
@@ -544,20 +764,24 @@ func (h *Handlers) HandleCallback(ctx context.Context, chatID int64, callbackID 
 		return
 	}
 
-	// All commands processed. Send results back to Claude.
-	log.Printf("[chat %d] all %d commands processed, sending results back to Claude", chatID, len(turn.Results))
+	// All commands processed. Send results back to the AI.
+	log.Printf("[chat %d] all %d commands processed, sending results back to AI", chatID, len(turn.Results))
 	h.approvals.Delete(chatID)
 	resultsMsg := FormatCommandResults(turn.Results)
 
 	h.sender.SendTyping(chatID)
-	h.callClaude(ctx, chatID, resultsMsg)
+	if turn.Provider == "gemini" {
+		h.callGemini(ctx, chatID, resultsMsg)
+	} else {
+		h.callClaude(ctx, chatID, resultsMsg)
+	}
 }
 
-// autoExecute runs all commands without approval (SKIP_PERMISSIONS mode)
+// autoExecuteClaude runs all commands without approval (SKIP_PERMISSIONS mode, Claude)
 // and feeds results back to Claude, looping up to maxRounds.
-func (h *Handlers) autoExecute(ctx context.Context, chatID int64, commands []string, sessionID string) {
+func (h *Handlers) autoExecuteClaude(ctx context.Context, chatID int64, commands []string, sessionID string) {
 	for round := 0; round < h.maxRounds; round++ {
-		log.Printf("[chat %d] auto-execute round %d: %d commands", chatID, round+1, len(commands))
+		log.Printf("[chat %d] auto-execute claude round %d: %d commands", chatID, round+1, len(commands))
 		var results []CommandResult
 		for i, cmd := range commands {
 			log.Printf("[chat %d] auto-executing command %d/%d: %s", chatID, i+1, len(commands), cmd)
@@ -627,6 +851,79 @@ func (h *Handlers) autoExecute(ctx context.Context, chatID int64, commands []str
 
 		commands = newCommands
 		sessionID = resp.SessionID
+	}
+
+	log.Printf("[chat %d] hit max tool rounds (%d), stopping", chatID, h.maxRounds)
+	h.sender.SendPlain(chatID, "Stopped: too many command rounds.")
+}
+
+// autoExecuteGemini runs all commands without approval (SKIP_PERMISSIONS mode, Gemini)
+// and feeds results back to Gemini, looping up to maxRounds.
+func (h *Handlers) autoExecuteGemini(ctx context.Context, chatID int64, commands []string) {
+	for round := 0; round < h.maxRounds; round++ {
+		log.Printf("[chat %d] auto-execute gemini round %d: %d commands", chatID, round+1, len(commands))
+		var results []CommandResult
+		for i, cmd := range commands {
+			log.Printf("[chat %d] auto-executing gemini command %d/%d: %s", chatID, i+1, len(commands), cmd)
+			h.sender.SendPlain(chatID, fmt.Sprintf("Running: %s", cmd))
+
+			output, err := h.gemini.ExecuteCommand(ctx, cmd)
+			if err != nil {
+				log.Printf("[chat %d] command error: %v", chatID, err)
+				output = fmt.Sprintf("%s\nError: %v", output, err)
+			}
+			if output == "" {
+				output = "(no output)"
+			}
+			log.Printf("[chat %d] command output: %d bytes", chatID, len(output))
+
+			display := output
+			if len(display) > 1000 {
+				display = display[:1000] + "\n... (truncated)"
+			}
+			h.sender.Send(chatID, display)
+
+			results = append(results, CommandResult{
+				Command:  cmd,
+				Approved: true,
+				Output:   output,
+			})
+		}
+
+		// Send results back to Gemini.
+		log.Printf("[chat %d] sending %d results back to Gemini", chatID, len(results))
+		resultsMsg := FormatCommandResults(results)
+		h.sender.SendTyping(chatID)
+
+		geminiCtx, cancel := context.WithTimeout(ctx, h.timeout)
+		history := h.geminiSessions.Get(chatID)
+		result, err := h.gemini.Send(geminiCtx, history, resultsMsg)
+		cancel()
+
+		if err != nil {
+			log.Printf("[chat %d] gemini error: %v", chatID, err)
+			h.sender.SendPlain(chatID, fmt.Sprintf("Error from Gemini: %v", err))
+			return
+		}
+
+		// Store turns.
+		h.geminiSessions.Append(chatID,
+			GeminiMessage{Role: "user", Content: resultsMsg},
+			GeminiMessage{Role: "model", Content: result},
+		)
+
+		cleanText, newCommands := ParseCommands(result)
+		log.Printf("[chat %d] auto-execute gemini: %d new commands", chatID, len(newCommands))
+		if cleanText != "" {
+			h.sender.Send(chatID, cleanText)
+		}
+
+		if len(newCommands) == 0 {
+			log.Printf("[chat %d] no more gemini commands, auto-execute done", chatID)
+			return
+		}
+
+		commands = newCommands
 	}
 
 	log.Printf("[chat %d] hit max tool rounds (%d), stopping", chatID, h.maxRounds)

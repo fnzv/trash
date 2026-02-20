@@ -13,12 +13,13 @@ type CommandResult struct {
 	Output   string
 }
 
-// PendingTurn holds all pending commands for a single Claude response.
+// PendingTurn holds all pending commands for a single AI response.
 type PendingTurn struct {
 	Commands   []string
 	CurrentIdx int
 	Results    []CommandResult
 	SessionID  string
+	Provider   string // "claude" or "gemini"
 }
 
 // ApprovalStore is a thread-safe map of chatID → pending turn.
@@ -56,11 +57,13 @@ func (s *ApprovalStore) Has(chatID int64) bool {
 	return ok
 }
 
-// PendingLogin holds state for an in-progress OAuth login via setup-token.
+// PendingLogin holds state for an in-progress login.
+// For Claude this is an OAuth PTY flow; for Gemini it's an API key prompt.
 type PendingLogin struct {
 	FeedCode        func(code string) error
 	Cancel          context.CancelFunc
 	OriginalMessage string
+	Provider        string // "claude" or "gemini"
 }
 
 // LoginStore is a thread-safe map of chatID → pending login.

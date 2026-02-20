@@ -7,7 +7,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// Bot ties together the Telegram API, Claude client, and handlers.
+// Bot ties together the Telegram API, AI clients, and handlers.
 type Bot struct {
 	api      *tgbotapi.BotAPI
 	handlers *Handlers
@@ -22,13 +22,16 @@ func NewBot(cfg *Config) (*Bot, error) {
 	log.Printf("Authorized as @%s", api.Self.UserName)
 
 	sender := NewSender(api, []string{cfg.TelegramToken})
-	client := NewClaudeClient(cfg)
+	claude := NewClaudeClient(cfg)
+	gemini := NewGeminiClient(cfg)
 	sessions := NewSessionManager()
+	geminiSessions := NewGeminiSessionStore()
+	providers := NewProviderStore(cfg.DefaultProvider)
 	approvals := NewApprovalStore()
 	logins := NewLoginStore()
 	usage := NewUsageTracker()
 	media := &MediaHandler{api: api, workDir: cfg.WorkDir, whisperCmd: cfg.WhisperCmd}
-	handlers := NewHandlers(sender, client, sessions, approvals, logins, usage, media, cfg)
+	handlers := NewHandlers(sender, claude, gemini, sessions, geminiSessions, providers, approvals, logins, usage, media, cfg)
 
 	return &Bot{
 		api:      api,
@@ -81,6 +84,12 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 			b.handlers.HandleUsage(chatID)
 		case "safeguard":
 			b.handlers.HandleSafeguard(chatID, msg.CommandArguments())
+		case "gemini":
+			b.handlers.HandleSwitchProvider(chatID, "gemini")
+		case "claude":
+			b.handlers.HandleSwitchProvider(chatID, "claude")
+		case "model":
+			b.handlers.HandleModel(chatID)
 		default:
 			b.handlers.HandleHelp(chatID)
 		}
@@ -101,7 +110,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		return
 	}
 
-	// Text message -> Claude.
+	// Text message -> active AI.
 	text := msg.Text
 	if text == "" {
 		text = msg.Caption

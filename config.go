@@ -13,6 +13,9 @@ type Config struct {
 	AllowedChatIDs  map[int64]bool
 	WorkDir         string
 	ClaudePath      string
+	GeminiPath      string
+	GeminiAPIKey    string
+	DefaultProvider string
 	CommandTimeout  time.Duration
 	AllowedTools    []string
 	SkipPermissions bool
@@ -60,6 +63,16 @@ func LoadConfig() (*Config, error) {
 		claudePath = "claude"
 	}
 
+	geminiPath := os.Getenv("GEMINI_PATH")
+	if geminiPath == "" {
+		geminiPath = "gemini"
+	}
+
+	defaultProvider := os.Getenv("DEFAULT_PROVIDER")
+	if defaultProvider == "" {
+		defaultProvider = "claude"
+	}
+
 	timeout := 5 * time.Minute
 	if t := os.Getenv("COMMAND_TIMEOUT"); t != "" {
 		var err error
@@ -99,6 +112,9 @@ func LoadConfig() (*Config, error) {
 		AllowedChatIDs:  allowed,
 		WorkDir:         workDir,
 		ClaudePath:      claudePath,
+		GeminiPath:      geminiPath,
+		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+		DefaultProvider: defaultProvider,
 		CommandTimeout:  timeout,
 		AllowedTools:    allowedTools,
 		SkipPermissions: skipPerms,

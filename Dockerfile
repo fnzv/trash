@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir openai-whisper && \
     npm install -g @anthropic-ai/claude-code && \
+    npm install -g @google/gemini-cli && \
     npm cache clean --force
 
 RUN useradd -m -s /bin/bash bot
