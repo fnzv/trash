@@ -13,7 +13,6 @@ type Config struct {
 	AllowedChatIDs  map[int64]bool
 	WorkDir         string
 	ClaudePath      string
-	GeminiPath      string
 	GeminiAPIKey    string
 	GeminiModel     string
 	DefaultProvider string
@@ -62,11 +61,6 @@ func LoadConfig() (*Config, error) {
 	claudePath := os.Getenv("CLAUDE_PATH")
 	if claudePath == "" {
 		claudePath = "claude"
-	}
-
-	geminiPath := os.Getenv("GEMINI_PATH")
-	if geminiPath == "" {
-		geminiPath = "gemini"
 	}
 
 	geminiModel := os.Getenv("GEMINI_MODEL")
@@ -118,7 +112,6 @@ func LoadConfig() (*Config, error) {
 		AllowedChatIDs:  allowed,
 		WorkDir:         workDir,
 		ClaudePath:      claudePath,
-		GeminiPath:      geminiPath,
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 		GeminiModel:     geminiModel,
 		DefaultProvider: defaultProvider,

@@ -136,6 +136,10 @@ func (h *Handlers) HandleNew(chatID int64) {
 	h.geminiSessions.Delete(chatID)
 	h.approvals.Delete(chatID)
 	h.usage.Reset(chatID)
+	// Reset Gemini working directory to the configured base.
+	h.gemini.mu.Lock()
+	h.gemini.cwd = h.gemini.workDir
+	h.gemini.mu.Unlock()
 	h.sender.SendPlain(chatID, "Session reset. Your next message will start a new conversation.")
 }
 
@@ -659,6 +663,13 @@ func (h *Handlers) callGemini(ctx context.Context, chatID int64, message string)
 
 	for i, cmd := range commands {
 		log.Printf("[chat %d] gemini command %d: %s", chatID, i+1, cmd)
+	}
+
+	// Enforce one command per turn: only take the first command even if Gemini
+	// sent multiple. The next command will come after we feed the output back.
+	if len(commands) > 1 {
+		log.Printf("[chat %d] gemini sent %d commands, trimming to 1", chatID, len(commands))
+		commands = commands[:1]
 	}
 
 	if h.skipPerms {

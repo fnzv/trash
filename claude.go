@@ -19,7 +19,9 @@ import (
 )
 
 // commandTagRe matches <command>...</command> blocks, including multiline.
-var commandTagRe = regexp.MustCompile(`(?s)<command>(.*?)</command>`)
+// The opening tag must appear at the start of a line (optional leading whitespace)
+// so that prose references like "use the `<command>` tags" are not mistakenly matched.
+var commandTagRe = regexp.MustCompile(`(?m)^[ \t]*<command>([\s\S]*?)</command>`)
 
 // commandInstruction is prepended to the first message of each session
 // to tell Claude to use <command> tags instead of executing directly.
@@ -52,14 +54,14 @@ type ClaudeUsage struct {
 
 // ClaudeResponse represents the JSON output from claude -p --output-format json.
 type ClaudeResponse struct {
-	Type       string     `json:"type"`
-	Subtype    string     `json:"subtype"`
-	IsError    bool       `json:"is_error"`
-	Result     string     `json:"result"`
-	SessionID  string     `json:"session_id"`
-	CostUSD    float64    `json:"total_cost_usd"`
-	DurationMs int64      `json:"duration_ms"`
-	NumTurns   int        `json:"num_turns"`
+	Type       string      `json:"type"`
+	Subtype    string      `json:"subtype"`
+	IsError    bool        `json:"is_error"`
+	Result     string      `json:"result"`
+	SessionID  string      `json:"session_id"`
+	CostUSD    float64     `json:"total_cost_usd"`
+	DurationMs int64       `json:"duration_ms"`
+	NumTurns   int         `json:"num_turns"`
 	Usage      ClaudeUsage `json:"usage"`
 }
 

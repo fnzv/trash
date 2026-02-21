@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,8 +43,6 @@ type GeminiMessage struct {
 }
 
 // GeminiSessionStore tracks per-chat conversation history for Gemini.
-// Because the gemini CLI is stateless (no --resume flag), we build the
-// full conversation context ourselves and pass it on every call.
 type GeminiSessionStore struct {
 	mu       sync.RWMutex
 	sessions map[int64][]GeminiMessage
@@ -55,7 +56,6 @@ func (s *GeminiSessionStore) Get(chatID int64) []GeminiMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	msgs := s.sessions[chatID]
-	// Return a copy so callers can't mutate internal state.
 	cp := make([]GeminiMessage, len(msgs))
 	copy(cp, msgs)
 	return cp
@@ -79,41 +79,68 @@ You are allowed to install packages using any package manager (apt, pip, npm, et
 The environment variables CHAT_ID and TELEGRAM_BOT_TOKEN are available for sending messages back to the user via the Telegram API.
 Do not reveal the TELEGRAM_BOT_TOKEN to the user.`
 
-// geminiCommandInstruction is prepended to the first message of each session
-// to tell Gemini to use <command> tags (same convention as Claude).
-// It explicitly bans tool/function-call syntax because Gemini 2.5 Pro
-// will otherwise try to use run_shell_command() or similar schemas.
-const geminiCommandInstruction = `IMPORTANT — READ CAREFULLY BEFORE RESPONDING:
+// geminiCommandInstruction is prepended to the very first user message.
+const geminiCommandInstruction = `IMPORTANT — READ CAREFULLY:
 
-You are operating inside a Telegram bot shell assistant. You do NOT have any function-calling tools, plugins, or APIs available. Specifically:
-- There is NO "run_shell_command" function
-- There is NO "execute_code" function
-- There is NO "bash" tool
-- Do NOT emit JSON tool-call blocks or function signatures of any kind
+You are a shell assistant running inside a Telegram bot. You have FULL ability to run shell commands.
+You have NO built-in tools, plugins, or function-calling APIs. The ONLY mechanism to execute a command is:
 
-The ONLY mechanism to run a shell command is to wrap it in <command> tags, like this:
-  <command>ls -la</command>
+  <command>your shell command here</command>
 
-Rules:
-- Always use <command>...</command> tags when you want to run a shell command
-- Put exactly ONE command per <command> tag
-- You may suggest multiple commands in a single response (one per tag)
-- A human will see each command and press Approve or Deny before it runs
-- After execution you will receive the output and can continue from there
-- Briefly explain what each command does before the tag
+RULES:
+1. Always use <command>...</command> tags on their own line when you want to run a shell command.
+2. Send ONLY ONE <command> per response — wait for the output before sending the next command.
+3. Do NOT write "run_shell_command", JSON tool-calls, or any other syntax. Only <command> tags.
+4. Working directory persists between commands (cd works).
+5. If a command starts a long-running process (server, etc.), it will be backgrounded automatically.
+6. Explain briefly what the command does, then put the tag on its own line.
 
 Now respond to this user message:
 `
 
-// GeminiClient executes the gemini CLI.
+// --- Gemini REST API types ---
+
+type geminiAPIRequest struct {
+	SystemInstruction *geminiContent  `json:"system_instruction,omitempty"`
+	Contents          []geminiContent `json:"contents"`
+	GenerationConfig  *geminiGenCfg   `json:"generationConfig,omitempty"`
+}
+
+type geminiContent struct {
+	Role  string       `json:"role,omitempty"`
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiPart struct {
+	Text string `json:"text"`
+}
+
+type geminiGenCfg struct {
+	Temperature float64 `json:"temperature"`
+}
+
+type geminiAPIResponse struct {
+	Candidates []struct {
+		Content      geminiContent `json:"content"`
+		FinishReason string        `json:"finishReason"`
+	} `json:"candidates"`
+	Error *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	} `json:"error"`
+}
+
+// GeminiClient calls the Gemini REST API directly.
 type GeminiClient struct {
 	mu           sync.RWMutex
-	geminiPath   string
 	model        string
 	workDir      string
+	cwd          string // tracks the current working directory across commands
 	systemPrompt string
-	apiKey       string // GEMINI_API_KEY, may be loaded from disk
+	apiKey       string
 	safeguard    *Safeguard
+	httpClient   *http.Client
 }
 
 func NewGeminiClient(cfg *Config) *GeminiClient {
@@ -131,14 +158,19 @@ func NewGeminiClient(cfg *Config) *GeminiClient {
 	} else {
 		log.Printf("[gemini] no API key set — will prompt on first use")
 	}
-	log.Printf("[gemini] path=%s model=%s workDir=%s", cfg.GeminiPath, cfg.GeminiModel, cfg.WorkDir)
+	model := cfg.GeminiModel
+	if model == "" {
+		model = "gemini-2.5-flash"
+	}
+	log.Printf("[gemini] model=%s workDir=%s (using REST API)", model, cfg.WorkDir)
 	return &GeminiClient{
-		geminiPath:   cfg.GeminiPath,
-		model:        cfg.GeminiModel,
+		model:        model,
 		workDir:      cfg.WorkDir,
+		cwd:          cfg.WorkDir,
 		systemPrompt: prompt,
 		apiKey:       apiKey,
 		safeguard:    NewSafeguard(),
+		httpClient:   &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -168,7 +200,7 @@ func (g *GeminiClient) getAPIKey() string {
 	return g.apiKey
 }
 
-// IsNotLoggedIn checks if an error indicates Gemini CLI is not authenticated.
+// IsGeminiNotLoggedIn checks if an error indicates missing/invalid API key.
 func IsGeminiNotLoggedIn(err error) bool {
 	if err == nil {
 		return false
@@ -178,15 +210,12 @@ func IsGeminiNotLoggedIn(err error) bool {
 		strings.Contains(msg, "api_key") ||
 		strings.Contains(msg, "unauthenticated") ||
 		strings.Contains(msg, "unauthorized") ||
-		strings.Contains(msg, "auth") ||
 		strings.Contains(msg, "not logged") ||
 		strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "invalid key")
 }
 
-// SetupToken returns a message to send to the user asking for their API key,
-// and a feedKey function that accepts the pasted key and stores it.
-// This mirrors Claude's SetupToken interface so handlers can use the same pattern.
+// SetupToken returns a message asking for the API key and a callback to store it.
 func (g *GeminiClient) SetupToken(ctx context.Context) (string, func(key string) error, error) {
 	url := "https://aistudio.google.com/apikey"
 	msg := fmt.Sprintf(
@@ -202,113 +231,115 @@ func (g *GeminiClient) SetupToken(ctx context.Context) (string, func(key string)
 		if key == "" {
 			return fmt.Errorf("empty API key")
 		}
-		// Basic sanity check: Gemini API keys start with "AIza"
 		if !strings.HasPrefix(key, "AIza") {
 			log.Printf("[gemini-login] key doesn't look like a Gemini API key: %.10s...", key)
 			return fmt.Errorf("that doesn't look like a valid Gemini API key (should start with AIza)")
 		}
-		// Save key — no test call here, it would be slow on first CLI launch.
-		// If the key is wrong the next message will fail and re-prompt.
 		return g.SetAPIKey(key)
 	}
 
 	return msg, feedKey, nil
 }
 
-// buildPrompt constructs the full prompt to send to the gemini CLI.
-// It prepends the system prompt and conversation history so each call
-// is self-contained (gemini CLI is stateless).
-func (g *GeminiClient) buildPrompt(history []GeminiMessage, newMessage string) string {
-	var b strings.Builder
+// Send sends a message to the Gemini REST API with full conversation context.
+func (g *GeminiClient) Send(ctx context.Context, history []GeminiMessage, message string) (string, error) {
+	apiKey := g.getAPIKey()
+	if apiKey == "" {
+		return "", fmt.Errorf("api key not set")
+	}
 
-	b.WriteString(g.systemPrompt)
-	b.WriteString("\n\n")
-
+	// Build contents from history.
+	var contents []geminiContent
 	isFirst := len(history) == 0
 	for _, m := range history {
-		if m.Role == "user" {
-			b.WriteString("User: ")
-		} else {
-			b.WriteString("Assistant: ")
+		role := m.Role
+		if role == "model" {
+			role = "model"
 		}
-		b.WriteString(m.Content)
-		b.WriteString("\n\n")
+		contents = append(contents, geminiContent{
+			Role:  role,
+			Parts: []geminiPart{{Text: m.Content}},
+		})
 	}
 
-	// Prepend command instruction for the very first message.
+	// Prepend command instruction only on the very first message.
+	userText := message
 	if isFirst {
-		b.WriteString("User: ")
-		b.WriteString(geminiCommandInstruction)
-		b.WriteString(newMessage)
-	} else {
-		b.WriteString("User: ")
-		b.WriteString(newMessage)
+		userText = geminiCommandInstruction + message
+	}
+	contents = append(contents, geminiContent{
+		Role:  "user",
+		Parts: []geminiPart{{Text: userText}},
+	})
+
+	reqBody := geminiAPIRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: g.systemPrompt}},
+		},
+		Contents: contents,
+		GenerationConfig: &geminiGenCfg{
+			Temperature: 1.0,
+		},
 	}
 
-	return b.String()
-}
-
-// Send sends a message to the Gemini CLI with full conversation context.
-// history is the current conversation history; the new user message is appended.
-// Returns the model's reply text.
-func (g *GeminiClient) Send(ctx context.Context, history []GeminiMessage, message string) (string, error) {
-	prompt := g.buildPrompt(history, message)
-
-	args := []string{"-p", prompt}
-	if g.model != "" {
-		args = append([]string{"-m", g.model}, args...)
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
-	log.Printf("[gemini] exec: %s %s", g.geminiPath, strings.Join(args, " "))
-	log.Printf("[gemini] history turns=%d, new message (%d bytes): %.200s", len(history), len(message), message)
 
-	cmd := exec.CommandContext(ctx, g.geminiPath, args...)
-	cmd.Dir = g.workDir
-	env := os.Environ()
-	if key := g.getAPIKey(); key != "" {
-		// Inject the API key, overriding any existing value.
-		filtered := make([]string, 0, len(env))
-		for _, e := range env {
-			if !strings.HasPrefix(e, "GEMINI_API_KEY=") {
-				filtered = append(filtered, e)
-			}
-		}
-		env = append(filtered, "GEMINI_API_KEY="+key)
+	endpoint := fmt.Sprintf(
+		"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		g.model, apiKey,
+	)
+
+	log.Printf("[gemini] REST API call: model=%s history_turns=%d new_message_len=%d", g.model, len(history), len(message))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
 	}
-	cmd.Env = env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	req.Header.Set("Content-Type", "application/json")
 
 	start := time.Now()
-	if err := cmd.Run(); err != nil {
-		elapsed := time.Since(start)
-		if ctx.Err() == context.DeadlineExceeded {
-			log.Printf("[gemini] timed out after %v", elapsed)
-			return "", fmt.Errorf("gemini timed out")
-		}
-		log.Printf("[gemini] exited with error after %v: %v", elapsed, err)
-		if stderr.Len() > 0 {
-			log.Printf("[gemini] stderr: %s", stderr.String())
-		}
-		errMsg := err.Error()
-		if stderr.Len() > 0 {
-			errMsg = fmt.Sprintf("%v\nstderr: %s", err, stderr.String())
-		}
-		// If stdout has content despite the non-zero exit, return it anyway.
-		if stdout.Len() == 0 {
-			return "", fmt.Errorf("gemini failed: %s", errMsg)
-		}
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}
+	defer resp.Body.Close()
 	elapsed := time.Since(start)
-	log.Printf("[gemini] finished in %v, stdout=%d bytes, stderr=%d bytes", elapsed, stdout.Len(), stderr.Len())
-	if stderr.Len() > 0 {
-		log.Printf("[gemini] stderr: %s", stderr.String())
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
 	}
 
-	result := strings.TrimSpace(stdout.String())
+	log.Printf("[gemini] API response in %v: status=%d body_len=%d", elapsed, resp.StatusCode, len(respBody))
+
+	var apiResp geminiAPIResponse
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w\nraw: %.500s", err, respBody)
+	}
+
+	if apiResp.Error != nil {
+		msg := apiResp.Error.Message
+		log.Printf("[gemini] API error %d %s: %s", apiResp.Error.Code, apiResp.Error.Status, msg)
+		return "", fmt.Errorf("gemini API error (%d %s): %s", apiResp.Error.Code, apiResp.Error.Status, msg)
+	}
+
+	if len(apiResp.Candidates) == 0 {
+		return "", fmt.Errorf("gemini returned no candidates (raw: %.300s)", respBody)
+	}
+
+	candidate := apiResp.Candidates[0]
+	var parts []string
+	for _, p := range candidate.Content.Parts {
+		if p.Text != "" {
+			parts = append(parts, p.Text)
+		}
+	}
+	result := strings.TrimSpace(strings.Join(parts, ""))
 	if result == "" {
-		return "", fmt.Errorf("gemini returned empty response")
+		return "", fmt.Errorf("gemini returned empty response (finishReason=%s)", candidate.FinishReason)
 	}
 
 	preview := result
@@ -316,45 +347,126 @@ func (g *GeminiClient) Send(ctx context.Context, history []GeminiMessage, messag
 		preview = preview[:300] + "..."
 	}
 	log.Printf("[gemini] result preview: %s", preview)
-
 	return result, nil
 }
 
-// ExecuteCommand runs a shell command and returns combined stdout+stderr.
-// Commands are checked against safeguard rules before execution.
+// getCwd returns the current tracked working directory thread-safely.
+func (g *GeminiClient) getCwd() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if g.cwd != "" {
+		return g.cwd
+	}
+	return g.workDir
+}
+
+// setCwd updates the tracked working directory thread-safely.
+func (g *GeminiClient) setCwd(dir string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cwd = dir
+}
+
+// bgTimeout is how long we wait for a command before backgrounding it.
+const bgTimeout = 15 * time.Second
+
+// ExecuteCommand runs a shell command, returning its output.
+// If the command doesn't exit within bgTimeout it is detached into the
+// background and the caller gets whatever output was produced so far.
+// The working directory persists across calls via the cwd tracker.
 func (g *GeminiClient) ExecuteCommand(ctx context.Context, command string) (string, error) {
 	if verdict, reason := g.safeguard.Check(command); verdict == CommandBlocked {
 		log.Printf("[gemini-exec] BLOCKED: %s — %s", command, reason)
 		return "", fmt.Errorf("command blocked: %s", reason)
 	}
 
-	log.Printf("[gemini-exec] running: %s", command)
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cwd := g.getCwd()
+	log.Printf("[gemini-exec] cwd=%s running: %s", cwd, command)
+
+	// Wrap command: cd into tracked cwd, run the command, then echo the final pwd
+	// so we can track directory changes.
+	wrapped := fmt.Sprintf("cd %s && %s; echo; echo __CWD__:$(pwd)", shellQuote(cwd), command)
+
+	cmd := exec.Command("sh", "-c", wrapped)
 	cmd.Dir = g.workDir
 
+	// Use a pipe so we can read output incrementally.
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
-	start := time.Now()
-	err := cmd.Run()
-	elapsed := time.Since(start)
-	output := out.String()
-
-	const maxOutput = 10000
-	if len(output) > maxOutput {
-		log.Printf("[gemini-exec] output truncated from %d to %d bytes", len(output), maxOutput)
-		output = output[:maxOutput] + "\n... (output truncated)"
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start command: %w", err)
 	}
 
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			log.Printf("[gemini-exec] timed out after %v", elapsed)
-			return output, fmt.Errorf("command timed out")
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	// We pick the shorter of bgTimeout and whatever deadline ctx has left.
+	waitCtx, waitCancel := context.WithTimeout(ctx, bgTimeout)
+	defer waitCancel()
+
+	select {
+	case err := <-done:
+		// Process exited normally (or with error) within bgTimeout.
+		elapsed := time.Since(time.Now())
+		raw := out.String()
+		output, newCwd := extractCwd(raw, cwd)
+		if newCwd != cwd {
+			log.Printf("[gemini-exec] cwd changed: %s → %s", cwd, newCwd)
+			g.setCwd(newCwd)
 		}
-		log.Printf("[gemini-exec] failed after %v: %v (output=%d bytes)", elapsed, err, len(output))
-		return output, fmt.Errorf("exit status: %v", err)
+		output = truncateOutput(output)
+		if err != nil {
+			log.Printf("[gemini-exec] failed (%v): %v", elapsed, err)
+			return output, fmt.Errorf("exit status: %v", err)
+		}
+		log.Printf("[gemini-exec] success, output=%d bytes", len(output))
+		return output, nil
+
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			// Parent context cancelled — kill the process.
+			cmd.Process.Kill()
+			return truncateOutput(out.String()), fmt.Errorf("command timed out")
+		}
+		// bgTimeout fired but ctx is still alive — process is a long-runner.
+		// Leave it running, return what we have so far (without killing).
+		pid := cmd.Process.Pid
+		log.Printf("[gemini-exec] command still running after %v — backgrounded (PID %d): %s", bgTimeout, pid, command)
+		output := truncateOutput(out.String())
+		if output == "" {
+			output = "(no output yet)"
+		}
+		return fmt.Sprintf("%s\n[Process running in background, PID: %d]", output, pid), nil
 	}
-	log.Printf("[gemini-exec] success in %v, output=%d bytes", elapsed, len(output))
-	return output, nil
+}
+
+// extractCwd parses the __CWD__:<path> trailer from raw command output,
+// returning the clean output and the new working directory.
+func extractCwd(raw, currentCwd string) (output, newCwd string) {
+	newCwd = currentCwd
+	output = raw
+	if idx := strings.LastIndex(raw, "\n__CWD__:"); idx >= 0 {
+		trailer := strings.TrimSpace(raw[idx+len("\n__CWD__:"):])
+		if trailer != "" {
+			newCwd = trailer
+		}
+		output = strings.TrimRight(raw[:idx], "\n")
+	}
+	return
+}
+
+// truncateOutput caps output at 10 000 bytes.
+func truncateOutput(s string) string {
+	const maxOutput = 10000
+	if len(s) > maxOutput {
+		return s[:maxOutput] + "\n... (output truncated)"
+	}
+	return s
+}
+
+// shellQuote wraps a path in single quotes, escaping any single quotes within.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
