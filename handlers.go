@@ -150,7 +150,8 @@ func (h *Handlers) HandleHelp(chatID int64) {
 			"/new     - Reset session (start fresh conversation)\n"+
 			"/claude  - Switch active AI to Claude\n"+
 			"/gemini  - Switch active AI to Gemini\n"+
-			"/model   - Show currently active AI\n"+
+			"/model   - Show currently active AI and model\n"+
+			"/gmodel  - Switch Gemini model (when using Gemini)\n"+
 			"/login   - Login to the active AI (Claude OAuth / Gemini API key)\n"+
 			"/usage   - Check usage stats\n"+
 			"/safeguard <cmd> - Test a command against safeguard rules\n"+
@@ -227,10 +228,43 @@ func (h *Handlers) HandleSwitchProvider(chatID int64, provider string) {
 	h.sender.SendPlain(chatID, fmt.Sprintf("Switched to %s. Starting a fresh session.", provider))
 }
 
-// HandleModel reports the currently active AI provider.
+// HandleModel reports the currently active AI provider and model.
 func (h *Handlers) HandleModel(chatID int64) {
 	provider := h.providers.Get(chatID)
-	h.sender.SendPlain(chatID, fmt.Sprintf("Current AI: %s", provider))
+	if provider == "gemini" {
+		h.sender.SendPlain(chatID, fmt.Sprintf("Current AI: %s (model: %s)\n\nUse /gmodel to switch Gemini models.", provider, h.gemini.GetModel()))
+	} else {
+		h.sender.SendPlain(chatID, fmt.Sprintf("Current AI: %s", provider))
+	}
+}
+
+// geminiModels is the list of available Gemini models shown in /gmodel.
+var geminiModels = []struct {
+	ID    string
+	Label string
+}{
+	{"gemini-2.5-flash", "⚡ Gemini 2.5 Flash (fast)"},
+	{"gemini-2.5-pro", "🧠 Gemini 2.5 Pro (smart)"},
+	{"gemini-3-flash-preview", "⚡ Gemini 3 Flash Preview"},
+	{"gemini-3-pro-preview", "🧠 Gemini 3 Pro Preview"},
+}
+
+// HandleGeminiModel shows an inline keyboard to pick a Gemini model.
+func (h *Handlers) HandleGeminiModel(chatID int64) {
+	current := h.gemini.GetModel()
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, m := range geminiModels {
+		label := m.Label
+		if m.ID == current {
+			label = "✅ " + label
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, "gmodel:"+m.ID),
+		))
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	h.sender.SendWithKeyboard(chatID, fmt.Sprintf("Current Gemini model: `%s`\nChoose a model:", current), keyboard)
 }
 
 // HandleMessage processes a user text message.
@@ -704,10 +738,22 @@ func (h *Handlers) showApproval(chatID int64, turn *PendingTurn) {
 	h.sender.SendWithKeyboard(chatID, label, keyboard)
 }
 
-// HandleCallback processes Approve/Deny button presses.
+// HandleCallback processes Approve/Deny button presses and gmodel selections.
 func (h *Handlers) HandleCallback(ctx context.Context, chatID int64, callbackID string, data string, messageID int) {
 	unlock := h.locks.Lock(chatID)
 	defer unlock()
+
+	// Handle Gemini model selection.
+	if strings.HasPrefix(data, "gmodel:") {
+		modelID := strings.TrimPrefix(data, "gmodel:")
+		h.gemini.SetModel(modelID)
+		// Reset session so next message uses the new model fresh.
+		h.geminiSessions.Delete(chatID)
+		log.Printf("[chat %d] gemini model switched to %s", chatID, modelID)
+		h.sender.AnswerCallback(callbackID, "Model switched!")
+		h.sender.EditRemoveKeyboard(chatID, messageID, fmt.Sprintf("✅ Switched to `%s`\nSession reset — next message starts fresh.", modelID))
+		return
+	}
 
 	turn := h.approvals.Get(chatID)
 	if turn == nil {

@@ -186,6 +186,21 @@ func (g *GeminiClient) SetAPIKey(key string) error {
 	return nil
 }
 
+// SetModel changes the active Gemini model at runtime.
+func (g *GeminiClient) SetModel(model string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.model = model
+	log.Printf("[gemini] model changed to %s", model)
+}
+
+// GetModel returns the currently active model.
+func (g *GeminiClient) GetModel() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.model
+}
+
 // HasAPIKey reports whether an API key is configured.
 func (g *GeminiClient) HasAPIKey() bool {
 	g.mu.RLock()

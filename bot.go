@@ -90,6 +90,8 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 			b.handlers.HandleSwitchProvider(chatID, "claude")
 		case "model":
 			b.handlers.HandleModel(chatID)
+		case "gmodel":
+			b.handlers.HandleGeminiModel(chatID)
 		default:
 			b.handlers.HandleHelp(chatID)
 		}
