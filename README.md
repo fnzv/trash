@@ -12,7 +12,7 @@ This bot is an evolution of previously published bots:
 
 <p align="center">
   <a href="https://github.com/fnzv/trash/actions/workflows/docker-build.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/fnzv/trash/ci?branch=main&style=for-the-badge" alt="CI status">
+    <img src="https://img.shields.io/github/actions/workflow/status/fnzv/trash/docker-build.yml?branch=main&style=for-the-badge" alt="CI status">
   </a>
   <a href="https://github.com/fnzv/trash/releases">
     <img src="https://img.shields.io/badge/Release-v1.0-blue?style=for-the-badge" alt="GitHub release">
